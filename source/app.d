@@ -15,7 +15,7 @@ string currentDirName = "";
 
 void main(string[] args) {
     if (args.length < 2) {
-        writeln("Uso: ./pod-compose {up|down|build}");
+        writeln("Usage: ./pod-compose {up|down|build}");
         return;
     }
 
@@ -27,7 +27,7 @@ void main(string[] args) {
     else if (exists("../docker-compose.yaml")) composeFile = "../docker-compose.yaml";
 
     if (composeFile == "") {
-        writeln("Erro: Nenhum arquivo docker-compose.yaml/yml encontrado.");
+        writeln("Error: No docker-compose.yaml/yml file found.");
         return;
     }
     
@@ -59,7 +59,7 @@ void main(string[] args) {
     } else if (command == "build") {
         build();
     } else {
-        writeln("Comando desconhecido: ", command);
+        writeln("Unknown command: ", command);
     }
 }
 
@@ -67,25 +67,25 @@ Node loadYaml() {
     try {
         return Loader.fromFile(composeFile).load();
     } catch (Exception e) {
-        writeln("Erro ao ler arquivo YAML: ", e.msg);
+        writeln("Error reading YAML file: ", e.msg);
         return Node(YAMLNull());
     }
 }
 
 void build() {
-    writeln("--- Construindo Imagens ---");
+    writeln("--- Building Images ---");
     auto root = loadYaml();
     if (root.nodeID == NodeID.invalid) return;
 
     if (!root.containsKey("services")) {
-        writeln("Erro: 'services' não encontrado no arquivo.");
+        writeln("Error: 'services' not found in file.");
         return;
     }
 
     auto services = root["services"];
     foreach (string serviceName, Node serviceConfig; services) {
         if (serviceConfig.containsKey("build")) {
-            writeln("Construindo serviço: ", serviceName);
+            writeln("Building service: ", serviceName);
             
             string context = ".";
             string dockerfile = "Dockerfile";
@@ -104,34 +104,34 @@ void build() {
             string buildCmd = "podman build -t " ~ imageName ~ " -f " ~ buildPath(context, dockerfile) ~ " " ~ context;
             if (target != "") buildCmd ~= " --target " ~ target;
             
-            writeln("   Executando: " ~ buildCmd);
+            writeln("   Executing: " ~ buildCmd);
             auto res = executeShell(buildCmd);
             if (res.status != 0) {
-                writeln("   Erro no build: ", res.output);
+                writeln("   Build error: ", res.output);
             } else {
-                writeln("   Sucesso.");
+                writeln("   Success.");
             }
         } else {
-            writeln("Serviço '", serviceName, "' não requer build (usa imagem).");
+            writeln("Service '", serviceName, "' does not require build (uses image).");
         }
     }
 }
 
 void up() {
-    writeln("--- Interpretando " ~ composeFile ~ " para Podman Pods (D/Dub Version) ---");
+    writeln("--- Interpreting " ~ composeFile ~ " for Podman Pods (D/Dub Version) ---");
 
     auto root = loadYaml();
     if (root.nodeID == NodeID.invalid) return;
 
     if (!root.containsKey("services")) {
-        writeln("Erro: 'services' não encontrado.");
+        writeln("Error: 'services' not found.");
         return;
     }
     
     auto services = root["services"];
     
     // 1. Collect Ports and Host Maps
-    writeln("[1/4] Identificando portas e hosts...");
+    writeln("[1/4] Identifying ports and hosts...");
     string allPortsArgs = "";
     string hostMaps = "";
 
@@ -150,22 +150,22 @@ void up() {
     // 2. Create Pod
     auto checkPod = executeShell("podman pod exists " ~ podName);
     if (checkPod.status == 0) {
-        writeln("Pod " ~ podName ~ " já existe.");
+        writeln("Pod " ~ podName ~ " already exists.");
     } else {
-        writeln("[2/4] Criando Pod '" ~ podName ~ "'");
+        writeln("[2/4] Creating Pod '" ~ podName ~ "'");
         string createCmd = "podman pod create --name " ~ podName ~ allPortsArgs ~ hostMaps;
         writeln("DEBUG: " ~ createCmd);
         auto res = executeShell(createCmd);
         if (res.status != 0) {
-            writeln("Erro ao criar pod: ", res.output);
+            writeln("Error creating pod: ", res.output);
             return;
         }
     }
 
     // 3. Start Containers
-    writeln("[3/4] Iniciando serviços...");
+    writeln("[3/4] Starting services...");
     foreach (string s, Node serviceConfig; services) {
-        writeln("Processando serviço: ", s);
+        writeln("Processing service: ", s);
         
         // Image logic
         string image = "";
@@ -180,16 +180,16 @@ void up() {
             // Check if image exists
             auto checkImg = executeShell("podman image exists " ~ imageName);
             if (checkImg.status != 0) {
-                writeln("   -> Imagem não encontrada. Executando build...");
+                writeln("   -> Image not found. Executing build...");
                 // Call build for this service specifically? Or just run global build?
                 // For simplicity, let's just run the build logic inline or call a helper.
                 // Re-using build logic is better but 'build()' function iterates all.
                 // Let's just warn and try to run.
-                writeln("   AVISO: Imagem " ~ imageName ~ " pode não existir. Rode './pod-compose build' primeiro.");
+                writeln("   WARNING: Image " ~ imageName ~ " may not exist. Run './pod-compose build' first.");
             }
             image = imageName;
         } else {
-            writeln("   -> Erro: Serviço '" ~ s ~ "' não tem imagem nem build definido.");
+            writeln("   -> Error: Service '" ~ s ~ "' has no image or build defined.");
             continue;
         }
 
@@ -200,7 +200,7 @@ void up() {
         }
         
         if (executeShell("podman container exists " ~ containerName).status == 0) {
-             writeln("   -> Container " ~ containerName ~ " já existe. Iniciando...");
+             writeln("   -> Container " ~ containerName ~ " already exists. Starting...");
              executeShell("podman start " ~ containerName);
              continue;
         }
@@ -251,7 +251,7 @@ void up() {
         }
 
         // Run
-        writeln("   -> Criando container " ~ containerName ~ "...");
+        writeln("   -> Creating container " ~ containerName ~ "...");
         string runCmd = "podman run -d --name " ~ containerName ~ 
                         " --pod " ~ podName ~ 
                         envArgs ~ 
@@ -261,18 +261,18 @@ void up() {
                         
         auto runRes = executeShell(runCmd);
         if (runRes.status != 0) {
-            writeln("      Erro ao rodar container: ", runRes.output);
+            writeln("      Error running container: ", runRes.output);
         } else {
-            writeln("      Sucesso: " ~ runRes.output.strip());
+            writeln("      Success: " ~ runRes.output.strip());
         }
     }
 
-    writeln("--- Deploy Concluído! ---");
+    writeln("--- Deploy Completed! ---");
     executeShell("podman pod ps --filter name=" ~ podName ~ " | cat");
 }
 
 void down() {
-    writeln("Derrubando Pod " ~ podName ~ "...");
+    writeln("Bringing down Pod " ~ podName ~ "...");
     auto res = executeShell("podman pod rm -f " ~ podName);
     writeln(res.output);
 }
