@@ -1,0 +1,12 @@
+{
+    "name": "pod-compose",
+    "authors": [
+        "Antigravity"
+    ],
+    "description": "A simple tool to run docker-compose files with Podman Pods",
+    "copyright": "Copyright © 2025, Antigravity",
+    "license": "proprietary",
+    "dependencies": {
+        "dyaml": "~>0.8.0"
+    }
+}
