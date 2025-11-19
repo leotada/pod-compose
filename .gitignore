@@ -18,7 +18,7 @@
 .dub
 docs.json
 __dummy.html
-docs/
+
 
 # Code coverage
 *.lst
@@ -26,3 +26,4 @@ docs/
 
 # bin
 pod-compose
+pod-compose-test-library

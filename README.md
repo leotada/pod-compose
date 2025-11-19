@@ -19,14 +19,26 @@ A simple tool to run docker-compose files with Podman using pods.
 Compile the project using `dub` or run the binary directly.
 
 ```bash
-./pod-compose {up|down|build}
+./pod-compose [options] {command} [args...]
 ```
+
+### Options
+
+- `-f, --file FILE`: Specify an alternate compose file (default: docker-compose.yml).
 
 ### Commands
 
 - `up`: Creates the pod (if not exists) and starts all services defined in `docker-compose.yml`.
 - `down`: Stops and removes the pod and all associated containers.
 - `build`: Builds the container images for services that define a `build` context.
+- `ps`: Lists containers in the pod.
+- `logs`: View output from containers. Use `-f` to follow.
+- `stop`: Stop the pod (and all services).
+- `start`: Start the pod (and all services).
+- `restart`: Restart the pod.
+- `pull`: Pull images for services.
+- `exec`: Execute a command in a running container.
+- `version`: Show version information.
 
 ## Requirements
 
@@ -41,3 +53,7 @@ dub build
 ```
 
 This will generate the `pod-compose` executable.
+
+## Documentation
+
+For more detailed usage instructions, see [HOW_TO_USE.md](docs/HOW_TO_USE.md).

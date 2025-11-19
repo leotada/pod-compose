@@ -1,278 +1,69 @@
 import std.stdio;
-import std.process;
-import std.file;
-import std.string;
-import std.array;
+import core.config;
+import podman.cli;
+import commands.registry;
 import std.algorithm;
-import std.path;
-import std.conv;
-import dyaml;
-
-// Configuration
-string composeFile = "";
-string podName = "";
-string currentDirName = "";
+import std.string;
 
 void main(string[] args) {
     if (args.length < 2) {
-        writeln("Usage: ./pod-compose {up|down|build}");
+        writeln("Usage: ./pod-compose {up|down|build|ps|logs|stop|start|restart|pull|exec} [args...]");
         return;
     }
 
-    // Detect Compose File
-    if (exists("docker-compose.yaml")) composeFile = "docker-compose.yaml";
-    else if (exists("docker-compose.yml")) composeFile = "docker-compose.yml";
-    else if (exists("compose.yaml")) composeFile = "compose.yaml";
-    else if (exists("../docker-compose.yml")) composeFile = "../docker-compose.yml"; // Check parent if running from subdir
-    else if (exists("../docker-compose.yaml")) composeFile = "../docker-compose.yaml";
+    string commandName = "";
+    string[] commandArgs;
+    string explicitFile = "";
 
-    if (composeFile == "") {
-        writeln("Error: No docker-compose.yaml/yml file found.");
-        return;
-    }
-    
-    // Normalize path to absolute or relative to current dir correctly
-    // If we found it in parent, we should probably switch context or just read it.
-    // For simplicity, let's assume we run from project root, but if we are in pod-compose/ dir, we look up.
-    // Actually, the user runs the binary. If the binary is in pod-compose/ and run from there, it might fail to find files.
-    // Let's assume the user runs it from the project root where docker-compose is.
-    
-    // Normalize path and change directory
-    if (isAbsolute(composeFile)) {
-        chdir(dirName(composeFile));
-        composeFile = baseName(composeFile);
-    } else {
-        string absPath = absolutePath(composeFile);
-        chdir(dirName(absPath));
-        composeFile = baseName(absPath);
-    }
-    
-    // Set Context
-    currentDirName = baseName(getcwd());
-    podName = currentDirName ~ "_pod";
-
-    string command = args[1];
-    if (command == "up") {
-        up();
-    } else if (command == "down") {
-        down();
-    } else if (command == "build") {
-        build();
-    } else {
-        writeln("Unknown command: ", command);
-    }
-}
-
-Node loadYaml() {
-    try {
-        return Loader.fromFile(composeFile).load();
-    } catch (Exception e) {
-        writeln("Error reading YAML file: ", e.msg);
-        return Node(YAMLNull());
-    }
-}
-
-void build() {
-    writeln("--- Building Images ---");
-    auto root = loadYaml();
-    if (root.nodeID == NodeID.invalid) return;
-
-    if (!root.containsKey("services")) {
-        writeln("Error: 'services' not found in file.");
-        return;
-    }
-
-    auto services = root["services"];
-    foreach (string serviceName, Node serviceConfig; services) {
-        if (serviceConfig.containsKey("build")) {
-            writeln("Building service: ", serviceName);
-            
-            string context = ".";
-            string dockerfile = "Dockerfile";
-            string target = "";
-            
-            auto buildNode = serviceConfig["build"];
-            if (buildNode.nodeID == NodeID.scalar) {
-                context = buildNode.as!string;
-            } else if (buildNode.nodeID == NodeID.mapping) {
-                if (buildNode.containsKey("context")) context = buildNode["context"].as!string;
-                if (buildNode.containsKey("dockerfile")) dockerfile = buildNode["dockerfile"].as!string;
-                if (buildNode.containsKey("target")) target = buildNode["target"].as!string;
-            }
-
-            string imageName = currentDirName ~ "_" ~ serviceName ~ ":latest";
-            string buildCmd = "podman build -t " ~ imageName ~ " -f " ~ buildPath(context, dockerfile) ~ " " ~ context;
-            if (target != "") buildCmd ~= " --target " ~ target;
-            
-            writeln("   Executing: " ~ buildCmd);
-            auto res = executeShell(buildCmd);
-            if (res.status != 0) {
-                writeln("   Build error: ", res.output);
+    // Manual argument parsing
+    for (size_t i = 1; i < args.length; i++) {
+        string arg = args[i];
+        if (arg == "-f" || arg == "--file") {
+            if (i + 1 < args.length) {
+                explicitFile = args[++i];
             } else {
-                writeln("   Success.");
+                writeln("Error: -f/--file requires an argument.");
+                return;
             }
+        } else if (arg.startsWith("-")) {
+             // Other flags? For now assume flags belong to the command if command is set, 
+             // or global flags if not. 
+             // But wait, if commandName is empty, this is a global flag.
+             // If we don't recognize it, maybe it's for the command?
+             // Standard docker-compose puts options before command.
+             // pod-compose -f file up
+             if (commandName == "") {
+                 writeln("Unknown global option: ", arg);
+                 return;
+             } else {
+                 commandArgs ~= arg;
+             }
         } else {
-            writeln("Service '", serviceName, "' does not require build (uses image).");
+            if (commandName == "") {
+                commandName = arg;
+            } else {
+                commandArgs ~= arg;
+            }
         }
     }
-}
 
-void up() {
-    writeln("--- Interpreting " ~ composeFile ~ " for Podman Pods (D/Dub Version) ---");
-
-    auto root = loadYaml();
-    if (root.nodeID == NodeID.invalid) return;
-
-    if (!root.containsKey("services")) {
-        writeln("Error: 'services' not found.");
+    if (commandName == "") {
+        writeln("Usage: ./pod-compose [options] {command} [args...]");
         return;
     }
-    
-    auto services = root["services"];
-    
-    // 1. Collect Ports and Host Maps
-    writeln("[1/4] Identifying ports and hosts...");
-    string allPortsArgs = "";
-    string hostMaps = "";
 
-    foreach (string s, Node serviceConfig; services) {
-        // Ports
-        if (serviceConfig.containsKey("ports")) {
-            foreach (Node p; serviceConfig["ports"]) {
-                string portStr = p.as!string;
-                allPortsArgs ~= " -p " ~ portStr;
-            }
-        }
-        // Host Maps
-        hostMaps ~= " --add-host " ~ s ~ ":127.0.0.1";
-    }
-
-    // 2. Create Pod
-    auto checkPod = executeShell("podman pod exists " ~ podName);
-    if (checkPod.status == 0) {
-        writeln("Pod " ~ podName ~ " already exists.");
-    } else {
-        writeln("[2/4] Creating Pod '" ~ podName ~ "'");
-        string createCmd = "podman pod create --name " ~ podName ~ allPortsArgs ~ hostMaps;
-        writeln("DEBUG: " ~ createCmd);
-        auto res = executeShell(createCmd);
-        if (res.status != 0) {
-            writeln("Error creating pod: ", res.output);
-            return;
-        }
-    }
-
-    // 3. Start Containers
-    writeln("[3/4] Starting services...");
-    foreach (string s, Node serviceConfig; services) {
-        writeln("Processing service: ", s);
+    try {
+        auto config = Config.load(args, explicitFile);
+        auto cli = new PodmanCLI();
+        auto registry = new CommandRegistry();
         
-        // Image logic
-        string image = "";
-        if (serviceConfig.containsKey("image")) {
-            image = serviceConfig["image"].as!string;
-        } else if (serviceConfig.containsKey("build")) {
-            // Check if image exists, if not build? 
-            // Or assume 'build' command was run? 
-            // Let's try to build if missing, or just use the expected tag.
-            string imageName = currentDirName ~ "_" ~ s ~ ":latest";
-            
-            // Check if image exists
-            auto checkImg = executeShell("podman image exists " ~ imageName);
-            if (checkImg.status != 0) {
-                writeln("   -> Image not found. Executing build...");
-                // Call build for this service specifically? Or just run global build?
-                // For simplicity, let's just run the build logic inline or call a helper.
-                // Re-using build logic is better but 'build()' function iterates all.
-                // Let's just warn and try to run.
-                writeln("   WARNING: Image " ~ imageName ~ " may not exist. Run './pod-compose build' first.");
-            }
-            image = imageName;
+        auto cmd = registry.get(commandName);
+        if (cmd !is null) {
+            cmd.execute(config, cli, commandArgs);
         } else {
-            writeln("   -> Error: Service '" ~ s ~ "' has no image or build defined.");
-            continue;
+            writeln("Unknown command: ", commandName);
         }
-
-        // Container Name
-        string containerName = currentDirName ~ "_" ~ s;
-        if (serviceConfig.containsKey("container_name")) {
-            containerName = serviceConfig["container_name"].as!string;
-        }
-        
-        if (executeShell("podman container exists " ~ containerName).status == 0) {
-             writeln("   -> Container " ~ containerName ~ " already exists. Starting...");
-             executeShell("podman start " ~ containerName);
-             continue;
-        }
-
-        // Environment
-        string envArgs = "";
-        if (serviceConfig.containsKey("environment")) {
-            auto env = serviceConfig["environment"];
-            if (env.nodeID == NodeID.mapping) {
-                foreach (string k, Node v; env) {
-                    string val = v.as!string;
-                    envArgs ~= " -e " ~ k ~ "=\"" ~ val ~ "\""; 
-                }
-            } else if (env.nodeID == NodeID.sequence) {
-                foreach (Node v; env) {
-                    envArgs ~= " -e \"" ~ v.as!string ~ "\"";
-                }
-            }
-        }
-
-        // Volumes
-        string volArgs = "";
-        if (serviceConfig.containsKey("volumes")) {
-            foreach (Node v; serviceConfig["volumes"]) {
-                string volStr = v.as!string;
-                if (volStr.canFind(":") && !volStr.canFind(":Z") && !volStr.canFind(":z")) {
-                    volStr ~= ":Z";
-                }
-                volArgs ~= " -v " ~ volStr;
-            }
-        }
-
-        // Command
-        string cmdArgs = "";
-        if (serviceConfig.containsKey("command")) {
-            auto cmd = serviceConfig["command"];
-            if (cmd.nodeID == NodeID.scalar) {
-                cmdArgs = " " ~ cmd.as!string;
-            } else if (cmd.nodeID == NodeID.sequence) {
-                foreach(Node c; cmd) cmdArgs ~= " " ~ c.as!string;
-            }
-        }
-        
-        // User
-        string userArgs = "";
-        if (serviceConfig.containsKey("user")) {
-            userArgs = " --user " ~ serviceConfig["user"].as!string;
-        }
-
-        // Run
-        writeln("   -> Creating container " ~ containerName ~ "...");
-        string runCmd = "podman run -d --name " ~ containerName ~ 
-                        " --pod " ~ podName ~ 
-                        envArgs ~ 
-                        volArgs ~ 
-                        userArgs ~ 
-                        " " ~ image ~ cmdArgs;
-                        
-        auto runRes = executeShell(runCmd);
-        if (runRes.status != 0) {
-            writeln("      Error running container: ", runRes.output);
-        } else {
-            writeln("      Success: " ~ runRes.output.strip());
-        }
+    } catch (Exception e) {
+        writeln("Error: ", e.msg);
     }
-
-    writeln("--- Deploy Completed! ---");
-    executeShell("podman pod ps --filter name=" ~ podName ~ " | cat");
-}
-
-void down() {
-    writeln("Bringing down Pod " ~ podName ~ "...");
-    auto res = executeShell("podman pod rm -f " ~ podName);
-    writeln(res.output);
 }
