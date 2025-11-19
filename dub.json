@@ -9,5 +9,13 @@
     "dependencies": {
         "dyaml": "~>0.8.0"
     },
-    "version": "0.1.0"
+    "version": "0.1.0",
+    "sourcePaths": [
+        "source",
+        "tests"
+    ],
+    "importPaths": [
+        "source",
+        "tests"
+    ]
 }

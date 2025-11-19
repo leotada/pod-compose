@@ -6,8 +6,10 @@ import podman.cli;
 
 @safe:
 
-class PsCommand : ICommand {
-    override void execute(Config config, PodmanCLI cli, string[] args) {
-        cli.ps(config.podName);
+class PsCommand : ICommand
+{
+    override void execute(Config config, PodmanCLI cli, string[] args)
+    {
+        cli.ps("", args);
     }
 }
