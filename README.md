@@ -52,6 +52,14 @@ Compile the project using `dub` or run the binary directly.
 dub build
 ```
 
+### Release Build
+
+To build an optimized release binary:
+
+```bash
+dub build --build=release
+```
+
 This will generate the `pod-compose` executable.
 
 ## Documentation
