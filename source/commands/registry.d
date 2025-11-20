@@ -12,13 +12,16 @@ import commands.impl.restart;
 import commands.impl.pull;
 import commands.impl.exec;
 import commands.impl.version_;
+import commands.impl.port;
 
 @safe:
 
-class CommandRegistry {
+class CommandRegistry
+{
     ICommand[string] commands;
 
-    this() {
+    this()
+    {
         commands["up"] = new UpCommand();
         commands["down"] = new DownCommand();
         commands["build"] = new BuildCommand();
@@ -30,10 +33,13 @@ class CommandRegistry {
         commands["pull"] = new PullCommand();
         commands["exec"] = new ExecCommand();
         commands["version"] = new VersionCommand();
+        commands["port"] = new PortCommand();
     }
 
-    ICommand get(string name) {
-        if (name in commands) {
+    ICommand get(string name)
+    {
+        if (name in commands)
+        {
             return commands[name];
         }
         return null;

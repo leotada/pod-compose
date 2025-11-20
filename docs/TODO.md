@@ -63,5 +63,5 @@ This file tracks the implementation status of features defined in the [Compose S
 - [ ] **`push`**: Implement `push` command.
 - [ ] **`rm`**: Implement `rm` command to remove stopped containers.
 - [ ] **`pause` / `unpause`**: Implement pause commands.
-- [ ] **`port`**: Implement port mapping inspection.
+- [x] **`port`**: Implement port mapping inspection.
 - [ ] **`events`**: Stream container events.

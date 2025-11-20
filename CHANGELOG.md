@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2025-11-20
+
+### Added
+- **New Commands**:
+    - `port`: Inspect public port mappings for services.
+    - `stop`: Stop services/pod without removing them.
+    - `start`: Start stopped services/pod.
+    - `restart`: Restart services/pod.
+    - `exec`: Execute commands inside running containers.
+    - `pull`: Pull images for services defined in the compose file.
+    - `logs`: View container logs (supports `-f` for follow).
+    - `version`: Display version information.
+- **CLI Enhancements**:
+    - `ps`: Improved process listing.
+
 ## [0.2.0] - 2025-11-20
 
 ### Added

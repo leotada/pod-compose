@@ -6,6 +6,7 @@ import std.string;
 import std.array;
 import std.algorithm;
 import std.conv;
+import std.json;
 
 @safe:
 
@@ -371,5 +372,47 @@ class PodmanCLI
     int podPs(string podName)
     {
         return executeStream("podman pod ps --filter name=" ~ podName);
+    }
+
+    string getInfraContainerId(string podName)
+    {
+        auto res = executeShell("podman pod inspect " ~ podName);
+        if (res.status != 0)
+        {
+            return "";
+        }
+        try
+        {
+            auto json = parseJSON(res.output);
+            if (json.type == JSONType.array)
+            {
+                auto arr = () @trusted { return json.array; }();
+                if (arr.length > 0)
+                {
+                    return arr[0]["InfraContainerID"].str;
+                }
+            }
+            // Fallback if it's not an array (unexpected but safe)
+            if (json.type == JSONType.object)
+            {
+                return json["InfraContainerID"].str;
+            }
+            return "";
+        }
+        catch (Exception e)
+        {
+            writeln("Error parsing pod inspect output: ", e.msg);
+            return "";
+        }
+    }
+
+    int port(string containerId, string privatePort = "")
+    {
+        string cmd = "podman port " ~ containerId;
+        if (privatePort != "")
+        {
+            cmd ~= " " ~ privatePort;
+        }
+        return executeStream(cmd);
     }
 }
