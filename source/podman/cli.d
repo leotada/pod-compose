@@ -5,6 +5,7 @@ import std.stdio;
 import std.string;
 import std.array;
 import std.algorithm;
+import std.conv;
 
 @safe:
 
@@ -90,13 +91,16 @@ class PodmanCLI
         return execute("podman image exists " ~ imageName) == 0;
     }
 
-    int createPod(string podName, string[] ports, string[] hostMaps)
+    int createPod(string podName, string[] ports, string[] hostMaps, string[] networks = [
+        ])
     {
         string args = "";
         foreach (p; ports)
             args ~= " -p " ~ p;
         foreach (h; hostMaps)
             args ~= " --add-host " ~ h;
+        foreach (n; networks)
+            args ~= " --network " ~ n;
 
         return execute("podman pod create --name " ~ podName ~ args);
     }
@@ -121,37 +125,208 @@ class PodmanCLI
         return execute("podman pod restart " ~ podName);
     }
 
-    int build(string context, string dockerfile, string tag, string target = "")
+    bool secretExists(string name)
     {
-        string cmd = "podman build -t " ~ tag ~ " -f " ~ dockerfile ~ " " ~ context;
-        if (target != "")
-            cmd ~= " --target " ~ target;
+        return execute("podman secret exists " ~ name) == 0;
+    }
+
+    int createSecret(string name, string file)
+    {
+        return execute("podman secret create " ~ name ~ " " ~ file);
+    }
+
+    bool volumeExists(string name)
+    {
+        return execute("podman volume exists " ~ name) == 0;
+    }
+
+    int createVolume(string name, string driver = "", string[string] labels = null)
+    {
+        string cmd = "podman volume create " ~ name;
+        if (driver != "")
+            cmd ~= " --driver " ~ driver;
+        foreach (k, v; labels)
+            cmd ~= " --label " ~ k ~ "=" ~ v;
+        return execute(cmd);
+    }
+
+    bool networkExists(string name)
+    {
+        return execute("podman network exists " ~ name) == 0;
+    }
+
+    int createNetwork(string name, string driver = "", string[string] labels = null)
+    {
+        string cmd = "podman network create " ~ name;
+        if (driver != "")
+            cmd ~= " --driver " ~ driver;
+        foreach (k, v; labels)
+            cmd ~= " --label " ~ k ~ "=" ~ v;
+        return execute(cmd);
+    }
+
+    struct BuildOptions
+    {
+        string context;
+        string dockerfile;
+        string tag;
+        string target;
+        string network;
+        string shmSize;
+        string[] cacheFrom;
+        string[string] args;
+        string[string] labels;
+    }
+
+    int build(BuildOptions opts)
+    {
+        string cmd = "podman build -t " ~ opts.tag ~ " -f " ~ opts.dockerfile ~ " " ~ opts.context;
+        if (opts.target != "")
+            cmd ~= " --target " ~ opts.target;
+        if (opts.network != "")
+            cmd ~= " --network " ~ opts.network;
+        if (opts.shmSize != "")
+            cmd ~= " --shm-size " ~ opts.shmSize;
+        foreach (c; opts.cacheFrom)
+            cmd ~= " --cache-from " ~ c;
+        foreach (k, v; opts.args)
+            cmd ~= " --build-arg " ~ k ~ "=" ~ v;
+        foreach (k, v; opts.labels)
+            cmd ~= " --label " ~ k ~ "=" ~ v;
+
         return executeStream(cmd);
     }
 
-    int runContainer(
-        string podName,
-        string containerName,
-        string image,
-        string[] envs,
-        string[] volumes,
-        string user,
-        string[] cmdArgs
-    )
+    struct ContainerRunOptions
     {
-        string args = " --pod " ~ podName ~ " --name " ~ containerName ~ " -d";
-        foreach (e; envs)
+        string podName;
+        string name;
+        string image;
+        string[] envs;
+        string[] volumes;
+        string user;
+        string[] command;
+        string workdir;
+        string entrypoint;
+        string restartPolicy;
+        string stopSignal;
+        int stopTimeout;
+        string hostname;
+        string domainname;
+        string[] labels;
+
+        // Resources
+        float cpus;
+        string memory;
+        string memoryReservation;
+
+        // Healthcheck
+        string healthCmd;
+        string healthInterval;
+        string healthTimeout;
+        string healthStartPeriod;
+        int healthRetries;
+        bool noHealthcheck;
+
+        // Security
+        bool privileged;
+        bool readOnly;
+        string[] capAdd;
+        string[] capDrop;
+        string[] securityOpt;
+
+        // Networking
+        string[] dns;
+        string[] dnsSearch;
+        string[] extraHosts;
+
+        // Secrets
+        string[] secrets;
+    }
+
+    int runContainer(ContainerRunOptions opts)
+    {
+        string args = " --pod " ~ opts.podName ~ " --name " ~ opts.name ~ " -d";
+
+        foreach (e; opts.envs)
             args ~= " -e \"" ~ e ~ "\"";
-        foreach (v; volumes)
+        foreach (v; opts.volumes)
             args ~= " -v " ~ v;
-        if (user != "")
-            args ~= " --user " ~ user;
+        if (opts.user != "")
+            args ~= " --user " ~ opts.user;
+        if (opts.workdir != "")
+            args ~= " --workdir " ~ opts.workdir;
+        if (opts.entrypoint != "")
+            args ~= " --entrypoint \"" ~ opts.entrypoint ~ "\"";
+        if (opts.restartPolicy != "")
+            args ~= " --restart " ~ opts.restartPolicy;
+        if (opts.stopSignal != "")
+            args ~= " --stop-signal " ~ opts.stopSignal;
+        if (opts.stopTimeout > 0)
+            args ~= " --stop-timeout " ~ opts.stopTimeout.to!string;
+        if (opts.hostname != "")
+            args ~= " --hostname " ~ opts.hostname;
+        if (opts.domainname != "")
+            args ~= " --domainname " ~ opts.domainname;
+        foreach (l; opts.labels)
+            args ~= " --label " ~ l;
 
-        string command = "";
-        foreach (c; cmdArgs)
-            command ~= " " ~ c;
+        // Resources
+        if (opts.cpus > 0)
+            args ~= " --cpus " ~ opts.cpus.to!string;
+        if (opts.memory != "")
+            args ~= " --memory " ~ opts.memory;
+        if (opts.memoryReservation != "")
+            args ~= " --memory-reservation " ~ opts.memoryReservation;
 
-        return execute("podman run " ~ args ~ " " ~ image ~ command);
+        // Healthcheck
+        if (opts.noHealthcheck)
+        {
+            args ~= " --no-healthcheck";
+        }
+        else
+        {
+            if (opts.healthCmd != "")
+                args ~= " --health-cmd \"" ~ opts.healthCmd ~ "\"";
+            if (opts.healthInterval != "")
+                args ~= " --health-interval " ~ opts.healthInterval;
+            if (opts.healthTimeout != "")
+                args ~= " --health-timeout " ~ opts.healthTimeout;
+            if (opts.healthStartPeriod != "")
+                args ~= " --health-start-period " ~ opts.healthStartPeriod;
+            if (opts.healthRetries > 0)
+                args ~= " --health-retries " ~ opts.healthRetries.to!string;
+        }
+
+        // Security
+        if (opts.privileged)
+            args ~= " --privileged";
+        if (opts.readOnly)
+            args ~= " --read-only";
+        foreach (c; opts.capAdd)
+            args ~= " --cap-add " ~ c;
+        foreach (c; opts.capDrop)
+            args ~= " --cap-drop " ~ c;
+        foreach (s; opts.securityOpt)
+            args ~= " --security-opt " ~ s;
+
+        // Networking
+        foreach (d; opts.dns)
+            args ~= " --dns " ~ d;
+        foreach (d; opts.dnsSearch)
+            args ~= " --dns-search " ~ d;
+        foreach (h; opts.extraHosts)
+            args ~= " --add-host " ~ h;
+
+        // Secrets
+        foreach (s; opts.secrets)
+            args ~= " --secret " ~ s;
+
+        string commandStr = "";
+        foreach (c; opts.command)
+            commandStr ~= " " ~ c;
+
+        return execute("podman run " ~ args ~ " " ~ opts.image ~ commandStr);
     }
 
     int startContainer(string containerName)

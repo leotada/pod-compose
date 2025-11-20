@@ -2,132 +2,199 @@ module core.parser;
 
 import dyaml;
 import core.models;
+import core.parsers.service;
 import std.stdio;
 import std.conv;
 import std.string;
 import std.algorithm;
 import std.path;
+import std.array;
+import std.typecons : Nullable;
 
 @safe:
 
-class ComposeParser {
+class ComposeParser
+{
     string filePath;
 
-    this(string filePath) {
+    this(string filePath)
+    {
         this.filePath = filePath;
     }
 
-    ComposeConfig parse() {
+    ComposeConfig parse()
+    {
         ComposeConfig config;
         Node root;
-        
-        try {
+
+        try
+        {
             root = Loader.fromFile(filePath).load();
-        } catch (Exception e) {
+        }
+        catch (Exception e)
+        {
             writeln("Error reading YAML file: ", e.msg);
             return config;
         }
 
-        if (root.containsKey("version")) {
+        if (root.containsKey("version"))
+        {
             config.version_ = root["version"].as!string;
         }
 
-        if (root.containsKey("services")) {
-            foreach (string name, Node serviceNode; root["services"]) {
+        if (root.containsKey("name"))
+        {
+            config.name = root["name"].as!string;
+        }
+
+        if (root.containsKey("services"))
+        {
+            foreach (string name, Node serviceNode; root["services"])
+            {
                 config.services[name] = parseService(name, serviceNode);
             }
         }
-        
-        // Networks and Volumes parsing can be added here
+
+        if (root.containsKey("networks"))
+        {
+            foreach (string name, Node netNode; root["networks"])
+            {
+                config.networks[name] = parseNetwork(name, netNode);
+            }
+        }
+
+        if (root.containsKey("volumes"))
+        {
+            foreach (string name, Node volNode; root["volumes"])
+            {
+                config.volumes[name] = parseVolume(name, volNode);
+            }
+        }
+
+        if (root.containsKey("configs"))
+        {
+            foreach (string name, Node cfgNode; root["configs"])
+            {
+                config.configs[name] = parseConfig(name, cfgNode);
+            }
+        }
+
+        if (root.containsKey("secrets"))
+        {
+            foreach (string name, Node secNode; root["secrets"])
+            {
+                config.secrets[name] = parseSecret(name, secNode);
+            }
+        }
 
         return config;
     }
 
-    private Service parseService(string name, Node node) {
-        Service service;
-        service.name = name;
+    private Service parseService(string name, Node node)
+    {
+        return ServiceParser.parse(name, node);
+    }
 
-        if (node.containsKey("image")) {
-            service.image = node["image"].as!string;
+    // --- Helper Parsers ---
+
+    private TopLevelNetwork parseNetwork(string name, Node node)
+    {
+        TopLevelNetwork net;
+        net.name = name;
+        if (node.nodeID == NodeID.mapping)
+        {
+            if (node.containsKey("driver"))
+                net.driver = node["driver"].as!string;
+            if (node.containsKey("external"))
+                net.external = node["external"].as!bool;
+            if (node.containsKey("internal"))
+                net.internal = node["internal"].as!bool;
+            if (node.containsKey("attachable"))
+                net.attachable = node["attachable"].as!bool;
+            if (node.containsKey("labels"))
+                net.labels = parseLabels(node["labels"]);
+            if (node.containsKey("name"))
+                net.name = node["name"].as!string;
         }
+        return net;
+    }
 
-        if (node.containsKey("build")) {
-            auto buildNode = node["build"];
-            if (buildNode.nodeID == NodeID.scalar) {
-                service.buildContext = buildNode.as!string;
-                service.dockerfile = "Dockerfile";
-            } else if (buildNode.nodeID == NodeID.mapping) {
-                if (buildNode.containsKey("context")) service.buildContext = buildNode["context"].as!string;
-                else service.buildContext = ".";
-                
-                if (buildNode.containsKey("dockerfile")) service.dockerfile = buildNode["dockerfile"].as!string;
-                else service.dockerfile = "Dockerfile";
-                
-                if (buildNode.containsKey("target")) service.target = buildNode["target"].as!string;
+    private TopLevelVolume parseVolume(string name, Node node)
+    {
+        TopLevelVolume vol;
+        vol.name = name;
+        if (node.nodeID == NodeID.mapping)
+        {
+            if (node.containsKey("driver"))
+                vol.driver = node["driver"].as!string;
+            if (node.containsKey("external"))
+                vol.external = node["external"].as!bool;
+            if (node.containsKey("labels"))
+                vol.labels = parseLabels(node["labels"]);
+            if (node.containsKey("name"))
+                vol.name = node["name"].as!string;
+        }
+        return vol;
+    }
+
+    private TopLevelConfig parseConfig(string name, Node node)
+    {
+        TopLevelConfig cfg;
+        cfg.name = name;
+        if (node.nodeID == NodeID.mapping)
+        {
+            if (node.containsKey("file"))
+                cfg.file = node["file"].as!string;
+            if (node.containsKey("external"))
+                cfg.external = node["external"].as!bool;
+            if (node.containsKey("name"))
+                cfg.name = node["name"].as!string;
+        }
+        return cfg;
+    }
+
+    private TopLevelSecret parseSecret(string name, Node node)
+    {
+        TopLevelSecret sec;
+        sec.name = name;
+        if (node.nodeID == NodeID.mapping)
+        {
+            if (node.containsKey("file"))
+                sec.file = node["file"].as!string;
+            if (node.containsKey("external"))
+                sec.external = node["external"].as!bool;
+            if (node.containsKey("name"))
+                sec.name = node["name"].as!string;
+        }
+        return sec;
+    }
+
+    private string[string] parseLabels(Node node)
+    {
+        string[string] labels;
+        if (node.nodeID == NodeID.mapping)
+        {
+            foreach (string k, Node v; node)
+            {
+                labels[k] = v.as!string;
             }
         }
-
-        if (node.containsKey("container_name")) {
-            service.containerName = node["container_name"].as!string;
-        }
-
-        if (node.containsKey("ports")) {
-            foreach (Node p; node["ports"]) {
-                service.ports ~= p.as!string;
-            }
-        }
-
-        if (node.containsKey("environment")) {
-            auto env = node["environment"];
-            if (env.nodeID == NodeID.mapping) {
-                foreach (string k, Node v; env) {
-                    service.environment[k] = v.as!string;
+        else if (node.nodeID == NodeID.sequence)
+        {
+            foreach (Node v; node)
+            {
+                string val = v.as!string;
+                auto parts = val.split("=");
+                if (parts.length >= 2)
+                {
+                    labels[parts[0]] = parts[1 .. $].join("=");
                 }
-            } else if (env.nodeID == NodeID.sequence) {
-                foreach (Node v; env) {
-                    string val = v.as!string;
-                    auto parts = val.split("=");
-                    if (parts.length >= 2) {
-                        service.environment[parts[0]] = parts[1 .. $].join("=");
-                    }
+                else
+                {
+                    labels[val] = "";
                 }
             }
         }
-
-        if (node.containsKey("volumes")) {
-            foreach (Node v; node["volumes"]) {
-                string volStr = v.as!string;
-                // Auto-append :Z for SELinux if not present
-                if (volStr.canFind(":") && !volStr.canFind(":Z") && !volStr.canFind(":z")) {
-                    volStr ~= ":Z";
-                }
-                service.volumes ~= volStr;
-            }
-        }
-
-        if (node.containsKey("command")) {
-            auto cmd = node["command"];
-            if (cmd.nodeID == NodeID.scalar) {
-                service.command ~= cmd.as!string; // Treat as single string arg? Or split? 
-                // Ideally we should respect shell parsing but for now let's just keep it simple.
-                // Actually, if it's a string, we might want to pass it as is.
-                // But our model uses string[].
-                // Let's just store it.
-            } else if (cmd.nodeID == NodeID.sequence) {
-                foreach (Node c; cmd) {
-                    service.command ~= c.as!string;
-                }
-            }
-        }
-
-        if (node.containsKey("user")) {
-            service.user = node["user"].as!string;
-        }
-        
-        if (node.containsKey("restart")) {
-            service.restart = node["restart"].as!string;
-        }
-
-        return service;
+        return labels;
     }
 }

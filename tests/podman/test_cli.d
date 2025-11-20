@@ -33,7 +33,11 @@ unittest
     cli.startContainer("mycontainer");
     assert(mock.lastCommand == "podman start mycontainer");
 
-    cli.build(".", "Dockerfile", "myimage:latest");
+    PodmanCLI.BuildOptions buildOpts;
+    buildOpts.context = ".";
+    buildOpts.dockerfile = "Dockerfile";
+    buildOpts.tag = "myimage:latest";
+    cli.build(buildOpts);
     assert(mock.lastCommand == "podman build -t myimage:latest -f Dockerfile .");
 
     cli.ps("mypod");
@@ -47,4 +51,10 @@ unittest
 
     cli.ps("", ["-a"]);
     assert(mock.lastCommand == "podman ps -a");
+
+    cli.secretExists("mysecret");
+    assert(mock.lastCommand == "podman secret exists mysecret");
+
+    cli.createSecret("mysecret", "secret.txt");
+    assert(mock.lastCommand == "podman secret create mysecret secret.txt");
 }
