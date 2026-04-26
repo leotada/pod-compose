@@ -7,8 +7,15 @@ import std.array;
 import std.algorithm;
 import std.conv;
 import std.json;
+import core.util;
 
 @safe:
+
+private bool debugEnabled() @trusted
+{
+    auto v = environment.get("POD_COMPOSE_DEBUG", "");
+    return v.length > 0 && v != "0" && v != "false";
+}
 
 interface IExecutor
 {
@@ -16,16 +23,27 @@ interface IExecutor
     int executeStream(string cmd);
 }
 
+private void debugLog(string cmd) @trusted
+{
+    if (debugEnabled())
+        stderr.writeln("[pod-compose] $ ", cmd);
+}
+
+private void errorLog(string cmd, string output) @trusted
+{
+    stderr.writeln("Error executing command: ", cmd);
+    stderr.writeln(output);
+}
+
 class ShellExecutor : IExecutor
 {
     override int execute(string cmd)
     {
-        writeln("DEBUG: Executing: ", cmd);
+        debugLog(cmd);
         auto res = executeShell(cmd);
         if (res.status != 0)
         {
-            writeln("Error executing command: ", cmd);
-            writeln(res.output);
+            errorLog(cmd, res.output);
         }
         else
         {
@@ -37,7 +55,7 @@ class ShellExecutor : IExecutor
 
     override int executeStream(string cmd)
     {
-        writeln("DEBUG: Executing (stream): ", cmd);
+        debugLog(cmd);
         auto pid = spawnShell(cmd);
         return wait(pid);
     }
@@ -69,27 +87,34 @@ class PodmanCLI
         return executor.executeStream(cmd);
     }
 
+    /// Like execute() but does not let the executor print error output for
+    /// expected non-zero exits (e.g. `podman X exists` probes).
+    int executeQuiet(string cmd) @trusted
+    {
+        // Bypass the executor's error printing entirely. Tests using a
+        // MockExecutor will still see the command via the executor when we
+        // are not the default ShellExecutor.
+        if (auto _ = cast(ShellExecutor) executor)
+        {
+            auto res = executeShell(cmd ~ " >/dev/null 2>&1");
+            return res.status;
+        }
+        return executor.execute(cmd);
+    }
+
     bool podExists(string podName)
     {
-        // For boolean checks, we might need to capture output or status.
-        // executeShell returns Tuple!(int, "status", string, "output")
-        // Our IExecutor returns int status.
-        // We need to change IExecutor or handle it differently.
-        // For simplicity, let's assume execute returns status.
-        // But we lose output for parsing.
-        // Let's stick to status for now.
-        // Actually, pod exists returns 0 if exists, 1 if not.
-        return execute("podman pod exists " ~ podName) == 0;
+        return executeQuiet("podman pod exists " ~ podName) == 0;
     }
 
     bool containerExists(string containerName)
     {
-        return execute("podman container exists " ~ containerName) == 0;
+        return executeQuiet("podman container exists " ~ containerName) == 0;
     }
 
     bool imageExists(string imageName)
     {
-        return execute("podman image exists " ~ imageName) == 0;
+        return executeQuiet("podman image exists " ~ imageName) == 0;
     }
 
     int createPod(string podName, string[] ports, string[] hostMaps, string[] networks = [
@@ -126,9 +151,124 @@ class PodmanCLI
         return execute("podman pod restart " ~ podName);
     }
 
+    int pausePod(string podName)
+    {
+        return execute("podman pod pause " ~ podName);
+    }
+
+    int unpausePod(string podName)
+    {
+        return execute("podman pod unpause " ~ podName);
+    }
+
+    int killPod(string podName, string signal = "")
+    {
+        string cmd = "podman pod kill";
+        if (signal != "")
+            cmd ~= " --signal " ~ signal;
+        cmd ~= " " ~ podName;
+        return execute(cmd);
+    }
+
+    int podTop(string podName, string[] args = [])
+    {
+        string cmd = "podman pod top " ~ podName;
+        foreach (a; args)
+            cmd ~= " " ~ a;
+        return executeStream(cmd);
+    }
+
+    int killContainer(string containerName, string signal = "")
+    {
+        string cmd = "podman kill";
+        if (signal != "")
+            cmd ~= " --signal " ~ signal;
+        cmd ~= " " ~ containerName;
+        return execute(cmd);
+    }
+
+    int pauseContainer(string containerName)
+    {
+        return execute("podman pause " ~ containerName);
+    }
+
+    int unpauseContainer(string containerName)
+    {
+        return execute("podman unpause " ~ containerName);
+    }
+
+    int removeContainer(string containerName, bool force = false)
+    {
+        string cmd = "podman rm";
+        if (force)
+            cmd ~= " -f";
+        cmd ~= " " ~ containerName;
+        return execute(cmd);
+    }
+
+    int push(string image)
+    {
+        return executeStream("podman push " ~ image);
+    }
+
+    int cp(string source, string dest)
+    {
+        return execute("podman cp " ~ shellQuoteIfNeeded(source) ~ " " ~ shellQuoteIfNeeded(dest));
+    }
+
+    int events(string[] filters = [])
+    {
+        string cmd = "podman events";
+        foreach (f; filters)
+            cmd ~= " --filter " ~ shellQuoteIfNeeded(f);
+        return executeStream(cmd);
+    }
+
+    int images(string[] filters = [])
+    {
+        string cmd = "podman images";
+        foreach (f; filters)
+            cmd ~= " --filter " ~ shellQuoteIfNeeded(f);
+        return executeStream(cmd);
+    }
+
+    /// Inspect health status of a container. Returns one of
+    /// "healthy", "unhealthy", "starting", "none", or "" on error.
+    string getContainerHealth(string containerName) @trusted
+    {
+        auto res = executeShell(
+            "podman inspect --format '{{.State.Health.Status}}' " ~ containerName);
+        if (res.status != 0)
+            return "";
+        return res.output.strip;
+    }
+
+    /// Inspect exit code of a stopped container, or -1 on error.
+    int getContainerExitCode(string containerName) @trusted
+    {
+        auto res = executeShell(
+            "podman inspect --format '{{.State.ExitCode}}' " ~ containerName);
+        if (res.status != 0)
+            return -1;
+        try
+            return res.output.strip.to!int;
+        catch (Exception)
+            return -1;
+    }
+
+    /// Returns true when the container's State.Status is "running".
+    bool isContainerRunning(string containerName) @trusted
+    {
+        auto res = executeShell(
+            "podman inspect --format '{{.State.Status}}' " ~ containerName);
+        if (res.status != 0)
+            return false;
+        return res.output.strip == "running";
+    }
+
     bool secretExists(string name)
     {
-        return execute("podman secret exists " ~ name) == 0;
+        return executeQuiet("podman secret exists " ~ name) == 0;
     }
 
     int createSecret(string name, string file)
@@ -138,7 +278,7 @@ class PodmanCLI
 
     bool volumeExists(string name)
     {
-        return execute("podman volume exists " ~ name) == 0;
+        return executeQuiet("podman volume exists " ~ name) == 0;
     }
 
     int createVolume(string name, string driver = "", string[string] labels = null)
@@ -153,7 +293,7 @@ class PodmanCLI
 
     bool networkExists(string name)
     {
-        return execute("podman network exists " ~ name) == 0;
+        return executeQuiet("podman network exists " ~ name) == 0;
     }
 
     int createNetwork(string name, string driver = "", string[string] labels = null)
@@ -204,17 +344,22 @@ class PodmanCLI
         string name;
         string image;
         string[] envs;
+        string[] envFiles;
         string[] volumes;
         string user;
         string[] command;
         string workdir;
-        string entrypoint;
+        string[] entrypoint;
         string restartPolicy;
         string stopSignal;
         int stopTimeout;
         string hostname;
         string domainname;
         string[] labels;
+        bool detach = true;
+        bool removeOnExit;
+        bool interactive;
+        bool tty;
 
         // Resources
         float cpus;
@@ -235,11 +380,23 @@ class PodmanCLI
         string[] capAdd;
         string[] capDrop;
         string[] securityOpt;
+        string[] devices;
+        string[] ulimits;
+        string[] groupAdd;
+        bool init;
+        string pid;
+        string ipc;
+        string[] sysctls;
 
         // Networking
         string[] dns;
         string[] dnsSearch;
         string[] extraHosts;
+        string[] expose;
+
+        // Logging
+        string logDriver;
+        string[] logOpts;
 
         // Secrets
         string[] secrets;
@@ -247,18 +404,30 @@ class PodmanCLI
 
     int runContainer(ContainerRunOptions opts)
     {
-        string args = " --pod " ~ opts.podName ~ " --name " ~ opts.name ~ " -d";
+        string args = " --pod " ~ opts.podName ~ " --name " ~ opts.name;
+        if (opts.detach)
+            args ~= " -d";
+        if (opts.removeOnExit)
+            args ~= " --rm";
+        if (opts.interactive)
+            args ~= " -i";
+        if (opts.tty)
+            args ~= " -t";
 
         foreach (e; opts.envs)
             args ~= " -e \"" ~ e ~ "\"";
+        foreach (f; opts.envFiles)
+            args ~= " --env-file " ~ shellQuoteIfNeeded(f);
         foreach (v; opts.volumes)
             args ~= " -v " ~ v;
         if (opts.user != "")
             args ~= " --user " ~ opts.user;
         if (opts.workdir != "")
-            args ~= " --workdir " ~ opts.workdir;
-        if (opts.entrypoint != "")
-            args ~= " --entrypoint \"" ~ opts.entrypoint ~ "\"";
+            args ~= " --workdir " ~ shellQuoteIfNeeded(opts.workdir);
+        if (opts.entrypoint.length == 1)
+            args ~= " --entrypoint \"" ~ opts.entrypoint[0] ~ "\"";
+        else if (opts.entrypoint.length > 1)
+            args ~= " --entrypoint " ~ shellQuote(jsonStringArray(opts.entrypoint));
         if (opts.restartPolicy != "")
             args ~= " --restart " ~ opts.restartPolicy;
         if (opts.stopSignal != "")
@@ -270,7 +439,7 @@ class PodmanCLI
         if (opts.domainname != "")
             args ~= " --domainname " ~ opts.domainname;
         foreach (l; opts.labels)
-            args ~= " --label " ~ l;
+            args ~= " --label " ~ shellQuoteIfNeeded(l);
 
         // Resources
         if (opts.cpus > 0)
@@ -304,12 +473,26 @@ class PodmanCLI
             args ~= " --privileged";
         if (opts.readOnly)
             args ~= " --read-only";
+        if (opts.init)
+            args ~= " --init";
+        if (opts.pid != "")
+            args ~= " --pid " ~ shellQuoteIfNeeded(opts.pid);
+        if (opts.ipc != "")
+            args ~= " --ipc " ~ shellQuoteIfNeeded(opts.ipc);
         foreach (c; opts.capAdd)
             args ~= " --cap-add " ~ c;
         foreach (c; opts.capDrop)
             args ~= " --cap-drop " ~ c;
         foreach (s; opts.securityOpt)
-            args ~= " --security-opt " ~ s;
+            args ~= " --security-opt " ~ shellQuoteIfNeeded(s);
+        foreach (d; opts.devices)
+            args ~= " --device " ~ shellQuoteIfNeeded(d);
+        foreach (u; opts.ulimits)
+            args ~= " --ulimit " ~ shellQuoteIfNeeded(u);
+        foreach (g; opts.groupAdd)
+            args ~= " --group-add " ~ g;
+        foreach (s; opts.sysctls)
+            args ~= " --sysctl " ~ shellQuoteIfNeeded(s);
 
         // Networking
         foreach (d; opts.dns)
@@ -318,6 +501,14 @@ class PodmanCLI
             args ~= " --dns-search " ~ d;
         foreach (h; opts.extraHosts)
             args ~= " --add-host " ~ h;
+        foreach (e; opts.expose)
+            args ~= " --expose " ~ e;
+
+        // Logging
+        if (opts.logDriver != "")
+            args ~= " --log-driver " ~ opts.logDriver;
+        foreach (o; opts.logOpts)
+            args ~= " --log-opt " ~ shellQuoteIfNeeded(o);
 
         // Secrets
         foreach (s; opts.secrets)
@@ -325,7 +516,7 @@ class PodmanCLI
 
         string commandStr = "";
         foreach (c; opts.command)
-            commandStr ~= " " ~ c;
+            commandStr ~= " " ~ shellQuoteIfNeeded(c);
 
         return execute("podman run " ~ args ~ " " ~ opts.image ~ commandStr);
     }
