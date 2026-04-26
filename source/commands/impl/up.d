@@ -1,7 +1,9 @@
 module commands.impl.up;
 
 import commands.base;
+import commands.impl.build;
 import core.config;
+import core.duration;
 import core.models;
 import core.parser;
 import podman.cli;
@@ -9,8 +11,13 @@ import std.stdio;
 import std.algorithm;
 import std.array;
 import std.path;
+import std.file : exists, readText;
 import std.math;
 import std.conv;
+import std.string;
+import std.datetime.stopwatch : StopWatch, AutoStart;
+import core.thread : Thread;
+import core.time : msecs, seconds;
 
 @safe:
 
@@ -52,6 +59,90 @@ class UpCommand : ICommand
         }
 
         return sorted;
+    }
+
+    /// Read an env_file and merge into the given map. Lines starting with `#`
+    /// or empty are ignored. Existing keys are NOT overwritten so values
+    /// already present (e.g. from `environment:`) take precedence.
+    void loadEnvFile(string path, ref string[string] env)
+    {
+        if (!exists(path))
+        {
+            writeln("   WARNING: env_file not found: ", path);
+            return;
+        }
+        string content;
+        try
+            content = readText(path);
+        catch (Exception e)
+        {
+            writeln("   WARNING: failed to read env_file ", path, ": ", e.msg);
+            return;
+        }
+        foreach (rawLine; content.splitLines)
+        {
+            string line = rawLine.strip;
+            if (line.length == 0 || line.startsWith("#"))
+                continue;
+            auto eq = line.indexOf('=');
+            if (eq < 0)
+                continue;
+            string key = line[0 .. eq].strip;
+            string val = line[eq + 1 .. $].strip;
+            // Strip matching surrounding quotes
+            if (val.length >= 2 && ((val[0] == '"' && val[$ - 1] == '"')
+                    || (val[0] == '\'' && val[$ - 1] == '\'')))
+                val = val[1 .. $ - 1];
+            if (key.length == 0)
+                continue;
+            if (key !in env)
+                env[key] = val;
+        }
+    }
+
+    /// Wait until container reaches the desired state for `depends_on`
+    /// conditions. Returns true on success, false on timeout/error.
+    bool waitForCondition(PodmanCLI cli, string containerName, string condition,
+        int timeoutSeconds = 120)
+    {
+        if (condition == "service_started" || condition.length == 0)
+            return true;
+
+        auto sw = StopWatch(AutoStart.yes);
+        while (sw.peek < timeoutSeconds.seconds)
+        {
+            if (condition == "service_healthy")
+            {
+                string h = cli.getContainerHealth(containerName);
+                if (h == "healthy")
+                    return true;
+                if (h == "unhealthy")
+                {
+                    writeln("   ERROR: dependency '", containerName, "' is unhealthy");
+                    return false;
+                }
+            }
+            else if (condition == "service_completed_successfully")
+            {
+                if (!cli.isContainerRunning(containerName))
+                {
+                    int code = cli.getContainerExitCode(containerName);
+                    if (code == 0)
+                        return true;
+                    writeln("   ERROR: dependency '", containerName,
+                        "' exited with code ", code);
+                    return false;
+                }
+            }
+            else
+            {
+                // Unknown condition: behave like service_started.
+                return true;
+            }
+            () @trusted { Thread.sleep(500.msecs); }();
+        }
+        writeln("   ERROR: timed out waiting for '", containerName, "' (", condition, ")");
+        return false;
     }
 
     override void execute(Config config, PodmanCLI cli, string[] args)
@@ -200,24 +291,55 @@ class UpCommand : ICommand
             writeln("Processing service: ", name);
 
             string image = "";
+            bool hasBuild = !service.build.isNull && !service.build.get.context.isNull;
             if (!service.image.isNull)
             {
                 image = service.image.get;
             }
-            else if (!service.build.isNull && !service.build.get.context.isNull)
+            else if (hasBuild)
             {
-                string imageName = config.projectName ~ "_" ~ name ~ ":latest";
-                if (!cli.imageExists(imageName))
-                {
-                    writeln(
-                        "   WARNING: Image " ~ imageName ~ " may not exist. Run 'pod-compose build' first.");
-                }
-                image = imageName;
+                image = config.projectName ~ "_" ~ name ~ ":latest";
             }
             else
             {
                 writeln("   -> Error: Service '" ~ name ~ "' has no image or build defined.");
                 continue;
+            }
+
+            // Build automatically when a build is defined and the image is
+            // either missing locally or no `image:` was specified. This avoids
+            // the previous behavior of letting `podman run` try to pull a
+            // non-existent image.
+            if (hasBuild && (service.image.isNull || !cli.imageExists(image)))
+            {
+                writeln("   -> Building image " ~ image ~ " for service " ~ name ~ "...");
+                auto bcfg = service.build.get;
+                PodmanCLI.BuildOptions bopts;
+                bopts.context = bcfg.context.get;
+                bopts.dockerfile = bcfg.dockerfile.isNull ? "Dockerfile" : bcfg.dockerfile.get;
+                bopts.tag = image;
+                if (!bcfg.target.isNull)
+                    bopts.target = bcfg.target.get;
+                if (!bcfg.network.isNull)
+                    bopts.network = bcfg.network.get;
+                if (!bcfg.shmSize.isNull)
+                    bopts.shmSize = bcfg.shmSize.get;
+                bopts.cacheFrom = bcfg.cacheFrom;
+                bopts.args = bcfg.args;
+                bopts.labels = bcfg.labels;
+                if (cli.build(bopts) != 0)
+                {
+                    writeln("   -> Build failed for " ~ name ~ ", skipping.");
+                    continue;
+                }
+            }
+
+            // Replicas > 1 are not supported under a single shared pod.
+            if (!service.deploy.isNull && !service.deploy.get.replicas.isNull
+                && service.deploy.get.replicas.get > 1)
+            {
+                writeln("   WARNING: deploy.replicas > 1 is not supported under "
+                    ~ "a shared pod; running a single instance for '" ~ name ~ "'.");
             }
 
             string containerName = service.containerName.isNull ?
@@ -231,7 +353,18 @@ class UpCommand : ICommand
             }
 
             string[] envs;
+            // 1) env_file (in declared order; values do NOT override later sources)
+            string[string] envMap;
             foreach (k, v; service.environment)
+                envMap[k] = v;
+            foreach (ef; service.envFile)
+            {
+                string p = ef;
+                if (!isAbsolute(p))
+                    p = buildPath(config.projectDir, p);
+                loadEnvFile(p, envMap);
+            }
+            foreach (k, v; envMap)
             {
                 envs ~= k ~ "=" ~ v;
             }
@@ -304,27 +437,19 @@ class UpCommand : ICommand
             if (!service.workingDir.isNull)
                 opts.workdir = service.workingDir.get;
             if (service.entrypoint.length > 0)
-                opts.entrypoint = service.entrypoint[0]; // Simplified: take first
+                opts.entrypoint = service.entrypoint;
             if (!service.restart.isNull)
                 opts.restartPolicy = service.restart.get;
             if (!service.stopSignal.isNull)
                 opts.stopSignal = service.stopSignal.get;
             if (!service.stopGracePeriod.isNull)
             {
-                // Parse duration string (e.g., "10s") to seconds. 
-                // For simplicity, assuming it ends with 's' or is just a number.
-                // A proper duration parser would be better, but let's do basic parsing.
-                string val = service.stopGracePeriod.get;
-                if (val.endsWith("s"))
-                    val = val[0 .. $ - 1];
-                try
-                {
-                    opts.stopTimeout = val.to!int;
-                }
-                catch (Exception e)
-                {
-                    writeln("WARNING: Could not parse stop_grace_period: ", val);
-                }
+                int secs = parseDurationSeconds(service.stopGracePeriod.get);
+                if (secs >= 0)
+                    opts.stopTimeout = secs;
+                else
+                    writeln("WARNING: Could not parse stop_grace_period: ",
+                        service.stopGracePeriod.get);
             }
             if (!service.hostname.isNull)
                 opts.hostname = service.hostname.get;
@@ -373,17 +498,60 @@ class UpCommand : ICommand
                 opts.privileged = service.privileged.get;
             if (!service.readOnly.isNull)
                 opts.readOnly = service.readOnly.get;
+            if (!service.init.isNull)
+                opts.init = service.init.get;
+            if (!service.pid.isNull)
+                opts.pid = service.pid.get;
+            if (!service.ipc.isNull)
+                opts.ipc = service.ipc.get;
             foreach (c; service.capAdd)
                 opts.capAdd ~= c;
             foreach (c; service.capDrop)
                 opts.capDrop ~= c;
             foreach (s; service.securityOpt)
                 opts.securityOpt ~= s;
+            foreach (g; service.groupAdd)
+                opts.groupAdd ~= g;
+            foreach (d; service.devices)
+            {
+                string spec = d.source;
+                if (!d.target.isNull)
+                    spec ~= ":" ~ d.target.get;
+                if (!d.permissions.isNull)
+                    spec ~= ":" ~ d.permissions.get;
+                opts.devices ~= spec;
+            }
+            foreach (k, u; service.ulimits)
+            {
+                if (u.isScalar && !u.soft.isNull)
+                    opts.ulimits ~= k ~ "=" ~ u.soft.get.to!string;
+                else
+                {
+                    string soft = u.soft.isNull ? "" : u.soft.get.to!string;
+                    string hard = u.hard.isNull ? soft : u.hard.get.to!string;
+                    opts.ulimits ~= k ~ "=" ~ soft ~ ":" ~ hard;
+                }
+            }
+            foreach (k, v; service.sysctls)
+                opts.sysctls ~= k ~ "=" ~ v;
+
+            // Logging
+            if (!service.logging.isNull)
+            {
+                auto lg = service.logging.get;
+                if (!lg.driver.isNull)
+                    opts.logDriver = lg.driver.get;
+                foreach (k, v; lg.options)
+                    opts.logOpts ~= k ~ "=" ~ v;
+            }
 
             // Networking
             opts.dns = service.dns;
             opts.dnsSearch = service.dnsSearch;
             opts.extraHosts = service.extraHosts;
+            opts.expose = service.expose;
+            if (!service.networkMode.isNull)
+                writeln("   WARNING: network_mode is ignored when running inside a shared pod.");
 
             // Secrets
             foreach (s; service.secrets)
@@ -403,6 +571,30 @@ class UpCommand : ICommand
             }
 
             cli.runContainer(opts);
+
+            // After spawning the container, satisfy any depends_on conditions
+            // declared by services that depend on THIS one. We check the
+            // condition on the just-started container so dependents that come
+            // later in the sorted list see a consistent state.
+            foreach (otherName, otherSvc; composeConfig.services)
+            {
+                if (otherName == name)
+                    continue;
+                if (name in otherSvc.dependsOn)
+                {
+                    auto cond = otherSvc.dependsOn[name].condition;
+                    if (cond == "service_healthy" || cond == "service_completed_successfully")
+                    {
+                        writeln("   -> Waiting for '", name, "' to satisfy '", cond, "'...");
+                        if (!waitForCondition(cli, containerName, cond))
+                        {
+                            writeln("   -> Aborting up due to failed dependency condition.");
+                            return;
+                        }
+                        break;
+                    }
+                }
+            }
         }
 
         writeln("--- Deploy Completed! ---");
