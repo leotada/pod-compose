@@ -19,7 +19,7 @@ This file tracks the implementation status of features defined in the [Compose S
 - [x] **`healthcheck`**: Support healthcheck configuration.
 - [x] **`deploy`**: Support deployment constraints (resources, replicas, etc.).
     - [x] Resources (cpus, memory)
-    - [ ] Replicas
+    - [x] Replicas (warning emitted; pod model runs a single instance)
 - [x] **`stop_signal`**: Support custom stop signals.
 - [x] **`stop_grace_period`**: Support custom grace periods.
 
@@ -34,20 +34,21 @@ This file tracks the implementation status of features defined in the [Compose S
 - [x] **`env_file`**: Load environment variables from files.
 - [x] **`working_dir`**: Set working directory.
 - [x] **`user`**: Ensure user mapping is correctly handled (already partially supported).
-- [ ] **`init`**: Run an init inside the container.
-- [ ] **`pid`**: PID namespace sharing.
+- [x] **`init`**: Run an init inside the container.
+- [x] **`pid`**: PID namespace sharing.
+- [x] **`ipc`**: IPC namespace sharing.
 
 ### Security & Privileges
 - [x] **`cap_add`**: Add capabilities.
 - [x] **`cap_drop`**: Drop capabilities.
 - [x] **`security_opt`**: Security options (SELinux, AppArmor, etc.).
 - [x] **`privileged`**: Run container in privileged mode.
-- [ ] **`devices`**: Device mappings.
-- [ ] **`sysctls`**: Kernel parameters.
-- [ ] **`ulimits`**: Resource limits.
+- [x] **`devices`**: Device mappings.
+- [x] **`sysctls`**: Kernel parameters.
+- [x] **`ulimits`**: Resource limits.
 
 ### Logging
-- [ ] **`logging`**: Configure logging driver and options.
+- [x] **`logging`**: Configure logging driver and options.
 
 ## Build Configuration
 - [x] **`args`**: Support build arguments.
@@ -60,8 +61,14 @@ This file tracks the implementation status of features defined in the [Compose S
 ## CLI Commands
 - [x] **`build`**: Ensure full support for build options.
 - [x] **`pull`**: Ensure `pull` command respects service image definitions.
-- [ ] **`push`**: Implement `push` command.
-- [ ] **`rm`**: Implement `rm` command to remove stopped containers.
-- [ ] **`pause` / `unpause`**: Implement pause commands.
+- [x] **`push`**: Implement `push` command.
+- [x] **`rm`**: Implement `rm` command to remove stopped containers.
+- [x] **`pause` / `unpause`**: Implement pause commands.
 - [x] **`port`**: Implement port mapping inspection.
-- [ ] **`events`**: Stream container events.
+- [x] **`events`**: Stream container events.
+- [x] **`kill`**: Send signal to containers (with `-s/--signal`).
+- [x] **`top`**: Show running processes.
+- [x] **`cp`**: Copy files between host and containers.
+- [x] **`images`**: List images used by services.
+- [x] **`config`**: Render the effective compose configuration.
+- [x] **`run`**: Run a one-off command for a service.
