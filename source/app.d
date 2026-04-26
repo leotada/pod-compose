@@ -5,6 +5,8 @@ import commands.registry;
 import std.algorithm;
 import std.string;
 
+@safe:
+
 void main(string[] args)
 {
     if (args.length < 2)
