@@ -120,6 +120,26 @@ class ServiceParser
             service.privileged = node["privileged"].as!bool;
         if (node.containsKey("read_only"))
             service.readOnly = node["read_only"].as!bool;
+        if (node.containsKey("devices"))
+        {
+            foreach (Node n; node["devices"])
+                service.devices ~= parseDevice(n);
+        }
+        if (node.containsKey("ulimits"))
+            service.ulimits = parseUlimits(node["ulimits"]);
+        if (node.containsKey("sysctls"))
+            service.sysctls = parseLabels(node["sysctls"]);
+        if (node.containsKey("pid"))
+            service.pid = node["pid"].as!string;
+        if (node.containsKey("ipc"))
+            service.ipc = node["ipc"].as!string;
+        if (node.containsKey("tmpfs"))
+            service.tmpfs = parseStringOrList(node["tmpfs"]);
+        if (node.containsKey("group_add"))
+        {
+            foreach (Node n; node["group_add"])
+                service.groupAdd ~= n.as!string;
+        }
 
         // Networking
         if (node.containsKey("dns"))
@@ -494,5 +514,57 @@ class ServiceParser
             }
         }
         return list;
+    }
+
+    private static DeviceMapping parseDevice(Node node)
+    {
+        DeviceMapping d;
+        if (node.nodeID == NodeID.scalar)
+        {
+            string s = node.as!string;
+            auto parts = s.split(":");
+            if (parts.length >= 1)
+                d.source = parts[0];
+            if (parts.length >= 2)
+                d.target = parts[1];
+            if (parts.length >= 3)
+                d.permissions = parts[2];
+        }
+        else if (node.nodeID == NodeID.mapping)
+        {
+            if (node.containsKey("source"))
+                d.source = node["source"].as!string;
+            if (node.containsKey("target"))
+                d.target = node["target"].as!string;
+            if (node.containsKey("permissions"))
+                d.permissions = node["permissions"].as!string;
+        }
+        return d;
+    }
+
+    private static Ulimit[string] parseUlimits(Node node)
+    {
+        Ulimit[string] ulimits;
+        if (node.nodeID != NodeID.mapping)
+            return ulimits;
+        foreach (string key, Node v; node)
+        {
+            Ulimit u;
+            if (v.nodeID == NodeID.scalar)
+            {
+                u.isScalar = true;
+                u.soft = v.as!long;
+                u.hard = v.as!long;
+            }
+            else if (v.nodeID == NodeID.mapping)
+            {
+                if (v.containsKey("soft"))
+                    u.soft = v["soft"].as!long;
+                if (v.containsKey("hard"))
+                    u.hard = v["hard"].as!long;
+            }
+            ulimits[key] = u;
+        }
+        return ulimits;
     }
 }

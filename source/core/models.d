@@ -23,6 +23,21 @@ struct Logging
     string[string] options;
 }
 
+struct DeviceMapping
+{
+    string source;
+    Nullable!string target;
+    Nullable!string permissions;
+}
+
+struct Ulimit
+{
+    Nullable!long soft;
+    Nullable!long hard;
+    /// True when the YAML used the short scalar form (e.g. `nofile: 65535`).
+    bool isScalar;
+}
+
 struct Build
 {
     Nullable!string context;
@@ -259,11 +274,14 @@ struct Service
     string[] securityOpt;
     Nullable!bool privileged;
     Nullable!bool readOnly;
-    string[] devices;
+    DeviceMapping[] devices;
     string[] deviceCgroupRules;
     string[] groupAdd;
     Nullable!string isolation;
     Nullable!string usernsMode;
+    Ulimit[string] ulimits;
+    Nullable!string pid;
+    Nullable!string ipc;
 
     // Networking
     string[] dns;
