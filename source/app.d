@@ -10,7 +10,8 @@ void main(string[] args)
     if (args.length < 2)
     {
         writeln(
-            "Usage: ./pod-compose {up|down|build|ps|logs|stop|start|restart|pull|exec|port} [args...]");
+            "Usage: pod-compose [-f FILE] {up|down|build|ps|logs|stop|start|restart|pull|exec|port|"
+            ~ "rm|pause|unpause|kill|top|push|events|cp|images|config|run|version} [args...]");
         return;
     }
 

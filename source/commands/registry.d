@@ -13,6 +13,17 @@ import commands.impl.pull;
 import commands.impl.exec;
 import commands.impl.version_;
 import commands.impl.port;
+import commands.impl.rm;
+import commands.impl.pause;
+import commands.impl.unpause;
+import commands.impl.kill_;
+import commands.impl.top;
+import commands.impl.push;
+import commands.impl.events;
+import commands.impl.cp;
+import commands.impl.images;
+import commands.impl.config_;
+import commands.impl.run;
 
 @safe:
 
@@ -34,6 +45,17 @@ class CommandRegistry
         commands["exec"] = new ExecCommand();
         commands["version"] = new VersionCommand();
         commands["port"] = new PortCommand();
+        commands["rm"] = new RmCommand();
+        commands["pause"] = new PauseCommand();
+        commands["unpause"] = new UnpauseCommand();
+        commands["kill"] = new KillCommand();
+        commands["top"] = new TopCommand();
+        commands["push"] = new PushCommand();
+        commands["events"] = new EventsCommand();
+        commands["cp"] = new CpCommand();
+        commands["images"] = new ImagesCommand();
+        commands["config"] = new ConfigCommand();
+        commands["run"] = new RunCommand();
     }
 
     ICommand get(string name)
